@@ -1,0 +1,16 @@
+# FastAPI core
+fastapi>=0.100.0
+uvicorn>=0.23.0
+pydantic>=2.0.0
+
+# PDF Parsing
+pymupdf>=1.23.0
+
+# AI and RAG
+langchain>=0.1.0
+langchain-google-genai>=1.0.0
+langgraph>=0.0.10
+pinecone>=5.0.0
+
+# File Uploads
+python-multipart>=0.0.6
