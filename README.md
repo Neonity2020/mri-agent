@@ -1,31 +1,43 @@
 # MRI Learning Agent SaaS
 
-An AI-powered, educational SaaS platform designed specifically to aid in learning complex medical physics, utilizing *MRI from Picture to Proton* as its core knowledge base. The system ingests medical textbook PDFs, parses complex layouts (including images and bilingual Tables of Contents), and uses a RAG (Retrieval-Augmented Generation) pipeline powered by Gemini to provide semantic search, webified reading experiences, chat interfaces, and study planning.
+An AI-powered educational platform that transforms medical physics textbooks into interactive learning experiences. The system ingests PDFs, parses complex layouts, and uses a RAG pipeline powered by Google Gemini to provide semantic search, webified reading experiences, chat interfaces, and study planning.
 
-## 🚀 Key Features
+## Features
 
-*   **PDF Ingestion & Smart Parsing**: Leverages PyMuPDF to extract text, raw tables of contents, and images (handling complex CMYK Separation color inversions accurately).
-*   **Bilingual RAG Engine**: Fully automated pipeline to build a vector database (Pinecone) with Gemini embeddings (3072 dimensions).
-*   **Chapter Webification**: Converts raw PDF pages into beautifully formatted responsive Markdown chapters, intelligently placing extracted original textbook images back into the text context using an LLM.
-*   **Interactive Study Calendar**: AI-generated structured learning plans based on the user's progress and the textbook's curriculum.
-*   **Vector-Powered Q&A**: A chat interface that searches the processed textbook chunks to provide pinpoint medical physics explanations without hallucinating out-of-context answers.
+- **PDF Ingestion & Smart Parsing** — PyMuPDF extracts text, images, and bilingual TOCs with CMYK color space correction
+- **RAG Engine** — Gemini embeddings (3072 dims) + Pinecone vector database for semantic retrieval
+- **PDF-Grounded Q&A** — Chat responses strictly based on uploaded PDF content, with similarity score filtering and clear fallback messaging
+- **Chapter Webification** — Raw PDF pages converted to responsive Markdown with intelligent image placement and LaTeX math support
+- **PDF Sidebar Viewer** — Side-by-side original PDF viewing with zoom, drag-to-pan, and page navigation
+- **Inline AI Chat** — Chapter-specific AI conversation sidebar with automatic context injection
+- **Multi-Conversation Management** — Create, switch, and delete independent chat sessions with auto-naming
+- **Resizable Panels** — Drag-to-resize sidebars for comfortable reading
+- **Study Calendar** — AI-generated structured learning plans based on the textbook's curriculum
+- **Markdown Export** — One-click export of AI responses as `.md` files
 
-## 🛠️ Technology Stack
+## Tech Stack
 
-### Frontend
-*   **Framework**: Next.js 14 (App Router)
-*   **UI / Styling**: Tailwind CSS, Radix UI, Lucide React
-*   **Markdown Rendering**: `react-markdown` with `rehype-raw`, `remark-math`, and `rehype-katex` for rendering complex math equations and HTML image grids.
+| Layer | Technology |
+|-------|-----------|
+| Frontend | Next.js (App Router), Tailwind CSS, shadcn/ui, Lucide React |
+| Markdown | react-markdown, rehype-raw, remark-math, rehype-katex |
+| PDF Viewer | pdfjs-dist |
+| Backend | FastAPI (Python 3.11+), Uvicorn |
+| AI / LLM | Google Gemini 2.5 Flash, Gemini Embeddings |
+| Vector DB | Pinecone |
+| PDF Processing | PyMuPDF (fitz), Pillow |
+| Deployment | Docker Compose, Nginx |
 
-### Backend
-*   **Framework**: FastAPI (Python 3.9+)
-*   **AI / LLMs**: Google Gemini 2.5 Flash, Google Generative AI Embeddings (`models/gemini-embedding-001`)
-*   **Vector Database**: Pinecone (`mri-learning-agent` index)
-*   **PDF Processing**: PyMuPDF (`fitz`), Pillow (PIL)
+## Local Development
 
-## 📦 Local Setup & Installation
+### Prerequisites
 
-### 1. Backend Setup
+- Python 3.11+
+- Node.js 20+
+- Pinecone account & API key
+- Google Gemini API key
+
+### 1. Backend
 
 ```bash
 cd backend
@@ -34,18 +46,17 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Create a `.env` file in the `backend/` directory:
+Create `backend/.env`:
 ```env
-PINECONE_API_KEY=your_pinecone_api_key
 GEMINI_API_KEY=your_google_gemini_api_key
+PINECONE_API_KEY=your_pinecone_api_key
 ```
 
-Run the backend server:
 ```bash
 uvicorn app.main:app --reload
 ```
 
-### 2. Frontend Setup
+### 2. Frontend
 
 ```bash
 cd frontend
@@ -53,27 +64,73 @@ npm install
 npm run dev
 ```
 
-The application will be available at `http://localhost:3000`.
+App runs at `http://localhost:3000`.
 
-## 📂 Project Structure
+### 3. Split Textbook (Optional)
+
+To enable per-chapter PDF viewing in the sidebar:
+
+```bash
+python split_chapters.py
+```
+
+This creates `chapters/` with individual chapter PDFs.
+
+## VPS Deployment (Docker Compose)
+
+### 1. Clone & Configure
+
+```bash
+git clone https://github.com/Neonity2020/mri-agent.git
+cd mri-agent
+cp .env.example .env
+nano .env  # Fill in your API keys
+```
+
+### 2. Build & Run
+
+```bash
+docker compose up -d --build
+```
+
+Architecture:
+```
+VPS (:80)
+  └── Nginx (reverse proxy)
+        ├── /       → Frontend (Next.js :3000)
+        └── /api/   → Backend (FastAPI :8000)
+```
+
+### 3. Update
+
+```bash
+git pull
+docker compose up -d --build
+```
+
+## Project Structure
 
 ```
-mri_learning_agent_saas/
 ├── backend/
 │   ├── app/
-│   │   ├── main.py                 # FastAPI application, upload processes (SSE), API routes
+│   │   ├── main.py              # FastAPI app, SSE upload, API routes, CORS
 │   │   └── services/
-│   │       ├── pdf_parser.py       # PDF parsing, image extraction, CMYK fix
-│   │       └── rag_engine.py       # Pinecone integration, Gemini interactions, Webification
-│   ├── delete_index.py             # Utility to clear vector DB
+│   │       ├── pdf_parser.py    # PDF parsing, image extraction, CMYK fix
+│   │       └── rag_engine.py    # Pinecone, Gemini RAG, chapter webification
+│   ├── delete_index.py          # Clear Pinecone vector DB
 │   └── requirements.txt
-└── frontend/
-    ├── src/
-    │   ├── app/
-    │   │   ├── page.tsx
-    │   │   └── chapters/[slug]/    # Webified chapter reading view
-    │   ├── components/             # React components (Chat Interface, Sidebar, etc.)
-    │   └── ...
-    ├── tailwind.config.ts
-    └── package.json
+├── frontend/
+│   ├── src/
+│   │   ├── app/
+│   │   │   ├── page.tsx         # Main page with upload
+│   │   │   └── chapters/[slug]/ # Chapter reader with PDF + chat sidebars
+│   │   └── components/
+│   │       └── chat/            # Multi-conversation chat interface
+│   └── package.json
+├── split_chapters.py            # Split textbook into per-chapter PDFs
+├── docker-compose.yml           # Docker Compose config
+├── Dockerfile                   # Backend container
+├── Dockerfile.frontend          # Frontend container
+├── nginx.conf                   # Reverse proxy config
+└── CLAUDE.md                    # Project documentation
 ```
