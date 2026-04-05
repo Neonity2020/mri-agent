@@ -50,6 +50,10 @@ class SearchRequest(BaseModel):
 class ChatRequest(BaseModel):
     message: str
 
+class ExportRequest(BaseModel):
+    content: str
+    title: str = "MRI学习笔记"
+
 @app.get("/")
 def read_root():
     return {"message": "Welcome to the MRI Learning Agent API"}
@@ -175,9 +179,59 @@ def get_webified_chapter(chapter_title: str, rag: "RagEngine" = Depends(get_rag_
         raise HTTPException(status_code=500, detail=str(e))
 
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 # Mount image directory
 os.makedirs("/tmp/mri_agent/images", exist_ok=True)
 app.mount("/api/images", StaticFiles(directory="/tmp/mri_agent/images"), name="images")
+
+# Mount exports directory
+os.makedirs("/tmp/mri_agent/exports", exist_ok=True)
+
+@app.post("/api/export/markdown")
+def export_markdown(request: ExportRequest):
+    """Generate a .md file from content and return a download URL."""
+    import hashlib, time, re
+    try:
+        # Sanitize title for filename
+        safe_title = re.sub(r'[^\w\u4e00-\u9fff\-]', '_', request.title).strip('_')[:60]
+        timestamp = int(time.time())
+        filename = f"{safe_title}_{timestamp}.md"
+        export_dir = "/tmp/mri_agent/exports"
+        file_path = os.path.join(export_dir, filename)
+        
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(f"# {request.title}\n\n")
+            f.write(request.content)
+            f.write(f"\n\n---\n*由 MRI Learning Agent 生成 | {time.strftime('%Y-%m-%d %H:%M:%S')}*\n")
+        
+        return {
+            "download_url": f"/api/exports/download/{filename}",
+            "filename": filename
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Export failed: {e}")
+
+@app.get("/api/exports/download/{filename}")
+def download_export(filename: str):
+    """Serve a generated markdown file for download."""
+    import re
+    # Security: only allow safe filenames
+    if not re.match(r'^[\w\u4e00-\u9fff\-\.]+$', filename):
+        raise HTTPException(status_code=400, detail="Invalid filename.")
+    file_path = f"/tmp/mri_agent/exports/{filename}"
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="File not found.")
+    from urllib.parse import quote
+    encoded_filename = quote(filename)
+    return FileResponse(
+        path=file_path,
+        filename=filename,
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": f"attachment; filename=\"{filename}\"; filename*=UTF-8''{encoded_filename}",
+            "Content-Type": "application/octet-stream",
+        }
+    )
 
 @app.post("/api/search")
 def search_concepts(request: SearchRequest, rag: "RagEngine" = Depends(get_rag_engine)):
@@ -285,13 +339,13 @@ def chat_with_agent(request: ChatRequest, rag: "RagEngine" = Depends(get_rag_eng
         # 1. Search Knowledge Base
         results = rag.search_concept(request.message, top_k=8)
         
-        # 2. Format Context
+        # 2. Format Context (only from high-relevance matches)
         context_texts = []
         for match in results:
             if "metadata" in match:
                 meta = match["metadata"]
                 context_texts.append(f"Excerpt: {meta.get('definition')}")
-                
+
         # Heuristic to inject absolute TOC if requested
         toc_keywords = ["大纲", "目录", "结构", "章节", "outline", "table of contents", "toc", "规划", "计划", "plan"]
         if any(kw in request.message.lower() for kw in toc_keywords):
@@ -300,30 +354,36 @@ def chat_with_agent(request: ChatRequest, rag: "RagEngine" = Depends(get_rag_eng
                 with open("/tmp/mri_agent/toc.txt", "r", encoding="utf-8") as f:
                     toc_data = f.read()
                 context_texts.insert(0, f"Complete Book Table of Contents:\n{toc_data}")
-                
-        context_str = "\n\n".join(context_texts) if context_texts else "No specific context found."
-        
-        # 3. Construct Prompt
-        system_prompt = f"""
-You are the MRI Learning Agent. Your goal is to help users master MRI principles based on the provided textbook excerpts.
-Here are the most relevant excerpts retrieved from the user's uploaded textbook:
+
+        has_context = len(context_texts) > 0
+        context_str = "\n\n".join(context_texts) if has_context else ""
+
+        # 3. Construct Prompt — strictly grounded in uploaded PDF
+        if has_context:
+            system_prompt = f"""
+You are the MRI Learning Agent. Your role is to help users master MRI principles **strictly based on the uploaded textbook excerpts provided below**.
 
 [TEXTBOOK EXCERPTS]:
 {context_str}
 
-Please answer the user's question.
-If the excerpts do not contain the answer, you can use your core medical physics knowledge. 
-**CRITICAL RULE 1: DO NOT ever mention that you cannot read the PDF, do not have access to the PDF, or any system limitations.** 
-**CRITICAL RULE 2: If the user asks for the book's outline, structure, or table of contents, your translation and terminology MUST strictly correspond to the original English materials provided in the excerpts.**
-Just answer the question directly. 
-**IMPORTANT: You MUST answer entirely in Simplified Chinese (简体中文).**
+## Rules:
+1. **ONLY answer using the information from the textbook excerpts above.** Do NOT use any external or pre-trained knowledge that is not supported by these excerpts.
+2. If the excerpts do not contain enough information to fully answer the question, clearly state what the excerpts cover and indicate the limitation. Do NOT fabricate or infer content that is not present.
+3. **CRITICAL RULE: If the user asks for the book's outline, structure, or table of contents, your translation and terminology MUST strictly correspond to the original English materials provided in the excerpts.**
+4. **IMPORTANT: You MUST answer entirely in Simplified Chinese (简体中文).**
+
+**EXPORT RULE: If the user explicitly asks you to generate notes, export, save, or create a file (e.g. "帮我整理笔记", "保存为文件", "导出", "生成笔记文件"), you MUST append the exact marker `[EXPORT_MD]` at the very end of your response (after all content). This tells the frontend to automatically trigger a file download. Do NOT mention this marker to the user; just include it silently at the end.**
 """
-        response = rag.llm.invoke([
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=request.message)
-        ])
-        
-        return {"reply": response.content}
+            response = rag.llm.invoke([
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=request.message)
+            ])
+            return {"reply": response.content}
+        else:
+            return {"reply": "抱歉，我在您上传的教材中没有找到与该问题相关的内容。请确保已上传包含相关章节的PDF文件，或者尝试换一种方式描述您的问题。\n\n如果您尚未上传教材，请先上传PDF文件，我会基于教材内容为您解答。"}
+
+
+
     except Exception as e:
         import traceback
         traceback.print_exc()

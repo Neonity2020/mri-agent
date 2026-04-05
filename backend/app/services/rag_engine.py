@@ -133,11 +133,18 @@ class RagEngine:
             self.index.upsert(vectors=vectors)
             print(f"Stored {len(vectors)} concept cards in {self.index_name}.")
 
-    def search_concept(self, query: str, top_k: int = 3) -> List[dict]:
-        """Search for relevant concept cards using semantic search."""
+    def search_concept(self, query: str, top_k: int = 3, min_score: float = 0.3) -> List[dict]:
+        """Search for relevant concept cards using semantic search.
+
+        Args:
+            query: The search query string.
+            top_k: Maximum number of results to return.
+            min_score: Minimum similarity score threshold. Results below this
+                       threshold are filtered out to ensure relevance.
+        """
         if not self.pc:
             return [{"error": "Vector DB not initialized."}]
-            
+
         embedding = self.embeddings.embed_query(query)
         try:
             results = self.index.query(
@@ -145,14 +152,16 @@ class RagEngine:
                 top_k=top_k,
                 include_metadata=True
             )
-            
-            # Format the output for the frontend
+
+            # Format the output for the frontend, filtering by minimum score
             matched_cards = []
             for match in results.get("matches", []):
-                matched_cards.append({
-                    "score": match.get("score"),
-                    "metadata": match.get("metadata")
-                })
+                score = match.get("score", 0)
+                if score >= min_score:
+                    matched_cards.append({
+                        "score": score,
+                        "metadata": match.get("metadata")
+                    })
             return matched_cards
         except Exception as e:
             print(f"Error searching concepts: {e}")
