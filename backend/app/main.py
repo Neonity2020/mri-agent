@@ -184,6 +184,58 @@ from fastapi.responses import FileResponse
 os.makedirs("/tmp/mri_agent/images", exist_ok=True)
 app.mount("/api/images", StaticFiles(directory="/tmp/mri_agent/images"), name="images")
 
+# --- Chapter PDF endpoint ---
+# Map chapter titles (zh/en) to split PDF files in chapters/ directory
+CHAPTERS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "chapters")
+
+@app.get("/api/chapter-pdf/{chapter_title:path}")
+def get_chapter_pdf(chapter_title: str):
+    """Serve the split chapter PDF matching the given title (Chinese or English)."""
+    import re
+    if not os.path.isdir(CHAPTERS_DIR):
+        raise HTTPException(status_code=404, detail="章节 PDF 目录不存在。")
+
+    decoded = chapter_title.strip()
+    for fname in sorted(os.listdir(CHAPTERS_DIR)):
+        if not fname.lower().endswith(".pdf"):
+            continue
+        # Filenames like "01_1_MRI魅力.pdf" — extract the Chinese title part
+        # Pattern: NN_ChapterNumber_ChineseTitle.pdf
+        name_no_ext = fname.rsplit(".", 1)[0]
+        # Extract Chinese title after the number prefix (e.g. "01_1_MRI魅力" -> "MRI魅力")
+        parts = name_no_ext.split("_", 2)
+        zh_title = parts[2] if len(parts) >= 3 else name_no_ext
+
+        # Match by Chinese title substring or by full chapter title
+        if decoded in zh_title or zh_title in decoded:
+            return FileResponse(
+                os.path.join(CHAPTERS_DIR, fname),
+                media_type="application/pdf",
+                filename=fname,
+            )
+
+    # Fallback: try matching by chapter number extracted from title
+    num_match = re.search(r'(\d+)', decoded)
+    if num_match:
+        ch_num = int(num_match.group(1))
+        for fname in sorted(os.listdir(CHAPTERS_DIR)):
+            if not fname.lower().endswith(".pdf"):
+                continue
+            parts = fname.rsplit(".", 1)[0].split("_")
+            if len(parts) >= 2:
+                try:
+                    file_num = int(parts[1])
+                    if file_num == ch_num:
+                        return FileResponse(
+                            os.path.join(CHAPTERS_DIR, fname),
+                            media_type="application/pdf",
+                            filename=fname,
+                        )
+                except ValueError:
+                    continue
+
+    raise HTTPException(status_code=404, detail=f"未找到章节 PDF: {chapter_title}")
+
 # Mount exports directory
 os.makedirs("/tmp/mri_agent/exports", exist_ok=True)
 

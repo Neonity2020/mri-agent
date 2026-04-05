@@ -18,3 +18,10 @@ build/
 
 # OS
 .DS_Store
+
+# Large files - split chapter PDFs (regenerate with python split_chapters.py)
+/chapters/
+
+# Root-level package files (pdfjs-dist installed at root for frontend)
+/package.json
+/package-lock.json
