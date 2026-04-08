@@ -14,3 +14,4 @@ pinecone>=5.0.0
 
 # File Uploads
 python-multipart>=0.0.6
+tenacity>=8.0.0

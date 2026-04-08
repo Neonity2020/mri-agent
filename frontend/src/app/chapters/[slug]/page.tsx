@@ -10,7 +10,7 @@ import rehypeRaw from 'rehype-raw';
 import 'katex/dist/katex.min.css';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Loader2, ArrowLeft, BookOpen, Share2, Printer, PanelRightOpen, PanelRightClose, ChevronLeft, ChevronRight, ZoomIn, ZoomOut, MessageSquare, Send, Bot, User } from 'lucide-react';
+import { Loader2, ArrowLeft, BookOpen, Share2, Printer, PanelRightOpen, PanelRightClose, ChevronLeft, ChevronRight, ZoomIn, ZoomOut, MessageSquare, Send, Bot, User, Download } from 'lucide-react';
 
 type ChatMessage = {
   id: string;
@@ -25,6 +25,19 @@ export default function ChapterPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const slug = decodeURIComponent(params.slug as string);
+
+  const handleDownloadMd = () => {
+    const safeTitle = String(slug).replace(/[^\w\u4e00-\u9fff\-]/g, '_').replace(/^_+|_+$/g, '').substring(0, 50);
+    const blob = new Blob([`# ${slug}\n\n${content}\n\n---\n*由 MRI Learning Agent 生成 | ${new Date().toLocaleString()}*`], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${safeTitle.length > 0 ? safeTitle : 'chapter'}.md`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
 
   // Sidebar toggle state
   const [showPdf, setShowPdf] = useState(false);
@@ -130,7 +143,14 @@ export default function ChapterPage() {
 
         const url = `http://localhost:8000/api/chapter-pdf/${encodeURIComponent(slug)}`;
         const response = await fetch(url);
-        if (!response.ok) throw new Error(`PDF fetch failed: ${response.status}`);
+        if (!response.ok) {
+          if (response.status === 404) {
+             // 优雅处理 404 错误，不在控制台抛出报错堆栈
+             // 直接 return 会让 pdfReady 保持为 false，UI 自然展示"无法加载"的回退状态
+             return;
+          }
+          throw new Error(`PDF fetch failed: ${response.status}`);
+        }
         const arrayBuffer = await response.arrayBuffer();
         const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
         const total = pdf.numPages;
@@ -301,6 +321,9 @@ export default function ChapterPage() {
             <Button variant="ghost" size="icon" className={`hidden sm:flex rounded-full ${showChat ? 'bg-zinc-100 dark:bg-zinc-800' : ''}`} onClick={() => setShowChat(v => !v)} title={showChat ? '关闭对话侧栏' : '打开 AI 对话'}>
               <MessageSquare className="h-4 w-4" />
             </Button>
+            <Button variant="ghost" size="icon" className="hidden sm:flex rounded-full" onClick={handleDownloadMd} title="下载 Markdown 笔记">
+              <Download className="h-4 w-4" />
+            </Button>
             <Button variant="ghost" size="icon" className="hidden sm:flex rounded-full">
               <Share2 className="h-4 w-4" />
             </Button>
@@ -342,6 +365,109 @@ export default function ChapterPage() {
           </div>
 
           <div className="px-4 py-16">
+            {/* Vocabulary table styles */}
+            <style>{`
+              .vocab-table {
+                width: 100%;
+                border-collapse: separate;
+                border-spacing: 0;
+                border-radius: 12px;
+                overflow: hidden;
+                border: 1px solid rgba(161,161,170,0.2);
+                margin: 2rem 0;
+                font-size: 0.875rem;
+                line-height: 1.6;
+              }
+              .vocab-table thead {
+                position: sticky;
+                top: 0;
+                z-index: 2;
+              }
+              .vocab-table thead tr {
+                background: linear-gradient(135deg, #1e3a5f 0%, #1e293b 100%);
+              }
+              .vocab-table thead th {
+                padding: 14px 16px;
+                text-align: left;
+                font-weight: 700;
+                color: #e2e8f0;
+                font-size: 0.8rem;
+                letter-spacing: 0.05em;
+                text-transform: uppercase;
+                border-bottom: 2px solid rgba(59,130,246,0.3);
+              }
+              .vocab-table thead th:first-child {
+                width: 140px;
+                min-width: 100px;
+              }
+              .vocab-table thead th:nth-child(2) {
+                width: 280px;
+                min-width: 180px;
+              }
+              .vocab-table tbody tr {
+                transition: background-color 0.15s ease;
+              }
+              .vocab-table tbody tr:nth-child(odd) {
+                background-color: rgba(248,250,252,0.6);
+              }
+              .vocab-table tbody tr:nth-child(even) {
+                background-color: rgba(241,245,249,0.4);
+              }
+              .vocab-table tbody tr:hover {
+                background-color: rgba(219,234,254,0.5);
+              }
+              .vocab-table tbody td {
+                padding: 10px 16px;
+                border-bottom: 1px solid rgba(226,232,240,0.6);
+                vertical-align: top;
+                color: #334155;
+              }
+              .vocab-table tbody td:first-child {
+                font-family: 'SF Mono', 'Fira Code', monospace;
+                font-size: 0.82rem;
+                color: #1e40af;
+                white-space: nowrap;
+              }
+              .vocab-table tbody td:nth-child(2) {
+                font-style: italic;
+                color: #64748b;
+                font-size: 0.82rem;
+              }
+              .vocab-table tbody tr:last-child td {
+                border-bottom: none;
+              }
+              @media (prefers-color-scheme: dark) {
+                .vocab-table {
+                  border-color: rgba(63,63,70,0.5);
+                }
+                .vocab-table thead tr {
+                  background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+                }
+                .vocab-table thead th {
+                  color: #94a3b8;
+                  border-bottom-color: rgba(59,130,246,0.2);
+                }
+                .vocab-table tbody tr:nth-child(odd) {
+                  background-color: rgba(30,41,59,0.4);
+                }
+                .vocab-table tbody tr:nth-child(even) {
+                  background-color: rgba(15,23,42,0.3);
+                }
+                .vocab-table tbody tr:hover {
+                  background-color: rgba(30,58,95,0.4);
+                }
+                .vocab-table tbody td {
+                  border-bottom-color: rgba(63,63,70,0.4);
+                  color: #cbd5e1;
+                }
+                .vocab-table tbody td:first-child {
+                  color: #60a5fa;
+                }
+                .vocab-table tbody td:nth-child(2) {
+                  color: #94a3b8;
+                }
+              }
+            `}</style>
             <article className={`prose prose-zinc dark:prose-invert max-w-none ${hasSidebar ? 'prose-sm' : ''} prose-headings:font-black prose-headings:tracking-tight prose-h1:text-3xl prose-h2:text-2xl prose-h2:border-b prose-h2:border-zinc-200 dark:prose-h2:border-zinc-800 prose-h2:pb-2 prose-h2:mt-16 prose-p:leading-relaxed prose-p:text-zinc-700 dark:prose-p:text-zinc-300 prose-strong:text-black dark:prose-strong:text-white prose-blockquote:border-blue-500 prose-blockquote:bg-blue-50/50 dark:prose-blockquote:bg-blue-900/10 prose-blockquote:rounded-r-xl prose-blockquote:py-1 prose-img:rounded-2xl prose-img:shadow-xl prose-img:filter-none selection:bg-blue-100 dark:selection:bg-blue-900/50`}>
               <ReactMarkdown
                 remarkPlugins={[remarkGfm, remarkMath]}

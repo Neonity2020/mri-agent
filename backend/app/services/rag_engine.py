@@ -1,5 +1,7 @@
 import os
+import time
 from typing import List, Dict, Any
+from tenacity import retry, stop_after_attempt, wait_exponential
 from pydantic import BaseModel, Field
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 from langchain.output_parsers import PydanticOutputParser
@@ -115,7 +117,13 @@ class RagEngine:
         for card in cards:
             # We embed the definition and key points combined
             text_to_embed = f"{card.concept_name}: {card.definition} " + " ".join(card.key_points)
-            embedding = self.embeddings.embed_query(text_to_embed)
+            
+            # Use retry logic for embedding
+            @retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=1, min=2, max=10))
+            def get_embedding():
+                return self.embeddings.embed_query(text_to_embed)
+                
+            embedding = get_embedding()
             
             # Use concept_name as ID (make it safe)
             vector_id = card.concept_name.lower().replace(" ", "-")
@@ -145,7 +153,12 @@ class RagEngine:
         if not self.pc:
             return [{"error": "Vector DB not initialized."}]
 
-        embedding = self.embeddings.embed_query(query)
+        # Use retry logic for embedding
+        @retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=1, min=2, max=10))
+        def get_embedding():
+            return self.embeddings.embed_query(query)
+
+        embedding = get_embedding()
         try:
             results = self.index.query(
                 vector=embedding,
@@ -311,6 +324,19 @@ RECONSTRUCTION RULES:
      ```
    - Group images by their original page number. Images with the same page number likely belong to the same figure.
 6. **NO META-COMMENTARY**: Do NOT add any remarks about the text being incomplete, truncated, or missing content. Just render what is provided cleanly.
+7. **VOCABULARY / GLOSSARY AS TABLE**: If the chapter contains a glossary, vocabulary list, or term definitions section, you MUST render all entries as an HTML table instead of bullet lists. Use this exact pattern:
+   ```html
+   <table class="vocab-table">
+   <thead><tr><th>术语</th><th>英文全称</th><th>定义</th></tr></thead>
+   <tbody>
+   <tr><td><strong>B0</strong></td><td>The main (static) magnetic field</td><td>主（静态）磁场，例如 1.5 T。</td></tr>
+   <!-- more rows -->
+   </tbody>
+   </table>
+   ```
+   - Group entries alphabetically.
+   - Each row must have: the abbreviation/symbol in bold, the English full name, and the Chinese definition/description.
+   - If the chapter only has a small inline term table (like "表3.1"), use standard Markdown table syntax instead.
 
 ORIGINAL TEXT:
 {text}
@@ -346,11 +372,22 @@ WEBIFIED CHINESE MARKDOWN (with images):""",
         yield {"status": "progress", "message": f"⏳ 准备生成 {len(chunks)} 个认知网格簇..."}
         
         # Process in batches to respect API limits
-        batch_size = 100
+        # Reduced batch_size from 100 to 30 to avoid '504 Deadline Exceeded'
+        batch_size = 30
         for i in range(0, len(chunks), batch_size):
             yield {"status": "progress", "message": f"⏳ 正在计算大模型维度空间张量：批次 [{i} - {min(i+batch_size, len(chunks))}] / {len(chunks)} ..."}
             batch_chunks = chunks[i:i+batch_size]
-            batch_embeddings = self.embeddings.embed_documents(batch_chunks)
+            
+            # Use retry logic with exponential backoff for the embedding call
+            @retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=1, min=4, max=20))
+            def get_batch_embeddings():
+                return self.embeddings.embed_documents(batch_chunks)
+            
+            try:
+                batch_embeddings = get_batch_embeddings()
+            except Exception as e:
+                print(f"❌ [RagEngine] Final failure after retries for embedding batch {i}: {e}")
+                raise e
             
             batch_vectors = []
             for j, emb in enumerate(batch_embeddings):
@@ -365,6 +402,9 @@ WEBIFIED CHINESE MARKDOWN (with images):""",
                     }
                 })
             vectors.extend(batch_vectors)
+            
+            # Add a small delay between batches to avoid overwhelming the API
+            time.sleep(0.5)
             
         yield {"status": "progress", "message": f"⏳ 正在将 {len(vectors)} 个特征向量推入 Pinecone 云端..."}
         # Always fetch a fresh index handle to avoid stale references after restarts/deletes
