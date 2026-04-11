@@ -1,12 +1,14 @@
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
 import os
 import json
+from datetime import datetime
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict, Any
 
 try:
     from app.services.rag_engine import RagEngine
+    from app.services.persistence_service import PersistenceService
 except ImportError:
     pass
 
@@ -26,12 +28,13 @@ app.add_middleware(
     expose_headers=["*"],
 )
 
-# Global instance
+# Global instances
 rag_engine = None
+persistence_service = None
 
 @app.on_event("startup")
 async def startup_event():
-    global rag_engine
+    global rag_engine, persistence_service
     print("🎬 [Startup] Initializing Global RagEngine...")
     try:
         from app.services.rag_engine import RagEngine
@@ -39,6 +42,25 @@ async def startup_event():
         print("✅ [Startup] RagEngine ready.")
     except Exception as e:
         print(f"❌ [Startup] RagEngine initialization FAILED: {e}")
+        import traceback
+        traceback.print_exc()
+
+    print("💾 [Startup] Initializing Persistence Service...")
+    try:
+        from app.services.persistence_service import PersistenceService
+        persistence_service = PersistenceService()
+        print("✅ [Startup] Persistence Service ready.")
+    except Exception as e:
+        print(f"❌ [Startup] Persistence Service initialization FAILED: {e}")
+        import traceback
+        traceback.print_exc()
+
+    # Initialize from persistent storage
+    try:
+        from scripts.initialize_from_persistence import initialize_from_persistence
+        initialize_from_persistence()
+    except Exception as e:
+        print(f"⚠️ [Startup] Persistence initialization failed: {e}")
         import traceback
         traceback.print_exc()
 
@@ -67,31 +89,58 @@ def health_check():
     return {"status": "healthy"}
 
 @app.get("/api/toc")
-def get_toc():
+def get_toc(rag: "RagEngine" = Depends(get_rag_engine)):
     import os, json
+
+    # First try to load from persistent cache
+    if persistence_service:
+        cached_toc = persistence_service.load_cache_file("toc_bilingual.json")
+        if cached_toc:
+            return {"toc": cached_toc}
+
+    # Fallback to temporary storage
     path = "/tmp/mri_agent/toc_bilingual.json"
     if os.path.exists(path):
         try:
             with open(path, "r", encoding="utf-8") as f:
-                return {"toc": json.load(f)}
+                toc_data = json.load(f)
+                # Save to persistent cache if persistence service is available
+                if persistence_service:
+                    persistence_service.save_cache_file("toc_bilingual.json", toc_data)
+                return {"toc": toc_data}
         except Exception:
             return {"toc": []}
+
     return {"toc": []}
 
 @app.get("/api/calendar")
 def get_calendar(rag: "RagEngine" = Depends(get_rag_engine)):
     try:
         import os, json
+
+        # First try to load from persistent cache
+        if persistence_service:
+            cached_calendar = persistence_service.load_cache_file("calendar_cache.json")
+            if cached_calendar:
+                return {"calendar": cached_calendar}
+
+        # Fallback to temporary storage
         cache_path = "/tmp/mri_agent/calendar_cache.json"
-        
-        # In a real app, invalidate cache on new upload. We do it blindly here for MVP
         if os.path.exists(cache_path):
             with open(cache_path, "r", encoding="utf-8") as f:
-                return {"calendar": json.load(f)}
-                
+                calendar_data = json.load(f)
+                # Save to persistent cache if persistence service is available
+                if persistence_service:
+                    persistence_service.save_cache_file("calendar_cache.json", calendar_data)
+                return {"calendar": calendar_data}
+
+        # Generate new calendar
         plan = rag.generate_learning_calendar()
+        # Save to both temporary and persistent storage
         with open(cache_path, "w", encoding="utf-8") as f:
             json.dump(plan, f, ensure_ascii=False)
+        if persistence_service:
+            persistence_service.save_cache_file("calendar_cache.json", plan)
         return {"calendar": plan}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -102,15 +151,30 @@ def get_chapter_summary(chapter: str, rag: "RagEngine" = Depends(get_rag_engine)
         import os, json, hashlib
         # Hash cache path so spaces and weird chars don't break the FS
         cache_key = hashlib.md5(chapter.encode('utf-8')).hexdigest()
-        cache_path = f"/tmp/mri_agent/chap_{cache_key}.json"
-        
-        if os.path.exists(cache_path):
-            with open(cache_path, "r", encoding="utf-8") as f:
-                return json.load(f)
-                
+        temp_cache_path = f"/tmp/mri_agent/chap_{cache_key}.json"
+
+        # First try to load from persistent cache
+        if persistence_service:
+            summary = persistence_service.load_cache_file(f"chap_{cache_key}.json")
+            if summary:
+                return summary
+
+        # Fallback to temporary storage
+        if os.path.exists(temp_cache_path):
+            with open(temp_cache_path, "r", encoding="utf-8") as f:
+                summary_data = json.load(f)
+                # Save to persistent cache if persistence service is available
+                if persistence_service:
+                    persistence_service.save_cache_file(f"chap_{cache_key}.json", summary_data)
+                return summary_data
+
+        # Generate new summary
         summary = rag.generate_chapter_summary(chapter)
-        with open(cache_path, "w", encoding="utf-8") as f:
+        # Save to both temporary and persistent storage
+        with open(temp_cache_path, "w", encoding="utf-8") as f:
             json.dump(summary, f, ensure_ascii=False)
+        if persistence_service:
+            persistence_service.save_cache_file(f"chap_{cache_key}.json", summary)
         return summary
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -127,9 +191,17 @@ def get_webified_chapter(chapter_title: str, rag: "RagEngine" = Depends(get_rag_
                 return {"content": f.read()}
         
         # 1. Find page range from TOC
-        toc_path = "/tmp/mri_agent/toc_bilingual.json"
-        if not os.path.exists(toc_path):
-            raise HTTPException(status_code=404, detail="教材尚未上传，无法获取章节详情。")
+        # Try persistent cache first
+        if persistence_service:
+            toc_data = persistence_service.load_cache_file("toc_bilingual.json")
+            if not toc_data:
+                raise HTTPException(status_code=404, detail="教材尚未上传，无法获取章节详情。")
+        else:
+            toc_path = "/tmp/mri_agent/toc_bilingual.json"
+            if not os.path.exists(toc_path):
+                raise HTTPException(status_code=404, detail="教材尚未上传，无法获取章节详情。")
+            with open(toc_path, "r", encoding="utf-8") as f:
+                toc_data = json.load(f)
             
         with open(toc_path, "r", encoding="utf-8") as f:
             toc = json.load(f)
@@ -153,10 +225,18 @@ def get_webified_chapter(chapter_title: str, rag: "RagEngine" = Depends(get_rag_
              
         # 2. Extract text range
         from app.services.pdf_parser import PDFParser
-        pdf_dir = "/tmp/mri_agent"
-        pdf_file = next((f for f in os.listdir(pdf_dir) if f.lower().endswith(".pdf")), None)
-        if not pdf_file:
-            raise HTTPException(status_code=404, detail="未找到原始 PDF 文件。")
+
+        # Check for PDF in persistent storage first
+        if persistence_service:
+            pdf_file_path = persistence_service.get_pdf_path()
+            if not pdf_file_path:
+                raise HTTPException(status_code=404, detail="未找到原始 PDF 文件。")
+        else:
+            pdf_dir = "/tmp/mri_agent"
+            pdf_file = next((f for f in os.listdir(pdf_dir) if f.lower().endswith(".pdf")), None)
+            if not pdf_file:
+                raise HTTPException(status_code=404, detail="未找到原始 PDF 文件。")
+            pdf_file_path = f"{pdf_dir}/{pdf_file}"
             
         parser = PDFParser(f"{pdf_dir}/{pdf_file}")
         raw_text = parser.extract_text_range(start_page, end_page)
@@ -327,6 +407,14 @@ async def upload_document(file: UploadFile = File(...), rag: "RagEngine" = Depen
                 shutil.copyfileobj(file.file, buffer)
                 
             yield sse_msg("parsing", "✅ 文件挂载成功！正在调度 PyMuPDF 引擎，对 PDF 中的复杂排版进行文本光流提取...")
+
+            # Persist PDF file
+            if persistence_service:
+                try:
+                    persisted_pdf_path = persistence_service.save_pdf(file_path, file.filename)
+                    print(f"📁 [Persistence] PDF saved to: {persisted_pdf_path}")
+                except Exception as e:
+                    print(f"⚠️ [Persistence] PDF persistence failed: {e}")
             
             parser = PDFParser(file_path)
             
@@ -444,3 +532,61 @@ You are the MRI Learning Agent. Your role is to help users master MRI principles
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Chat failed: {e}")
+
+# --- Persistence Management Endpoints ---
+
+@app.get("/api/persistence/stats")
+def get_persistence_stats():
+    """Get storage statistics."""
+    if persistence_service:
+        return persistence_service.get_storage_stats()
+    return {"error": "Persistence service not initialized"}
+
+@app.delete("/api/persistence/cache/{filename}")
+def delete_cache_file(filename: str):
+    """Delete a specific cache file."""
+    if not persistence_service:
+        raise HTTPException(status_code=503, detail="Persistence service not initialized")
+
+    filepath = persistence_service.cache_dir / filename
+    if not filepath.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    filepath.unlink()
+    return {"message": f"Deleted cache file: {filename}"}
+
+@app.post("/api/persistence/cleanup")
+def cleanup_old_cache(days: int = 30):
+    """Clean up old cache files."""
+    if not persistence_service:
+        raise HTTPException(status_code=503, detail="Persistence service not initialized")
+
+    removed_files = persistence_service.cleanup_old_files(days)
+    return {
+        "message": f"Cleaned up files older than {days} days",
+        "removed_files": removed_files
+    }
+
+@app.get("/api/persistence/export")
+def export_persistence_data():
+    """Export all persistence data for backup."""
+    if not persistence_service:
+        raise HTTPException(status_code=503, detail="Persistence service not initialized")
+
+    # Collect all data
+    export_data = {
+        "timestamp": datetime.now().isoformat(),
+        "stats": persistence_service.get_storage_stats(),
+        "toc": persistence_service.load_cache_file("toc_bilingual.json"),
+        "calendar": persistence_service.load_cache_file("calendar_cache.json"),
+        "cache_files": persistence_service.list_cache_files()
+    }
+
+    # Generate download URL
+    export_path = persistence_service.export_data(export_data, "backup")
+    relative_path = str(Path(export_path).relative_to(Path.cwd()))
+
+    return {
+        "download_url": f"/api/exports/download/{Path(relative_path).name}",
+        "filename": Path(relative_path).name
+    }
